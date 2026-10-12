@@ -12,7 +12,7 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 /// @title WillFolksEscrow
 /// @notice Escrow de compromisos (fase 1): el usuario bloquea USDC contra una meta y un
 ///         atestador autorizado firma el veredicto. Si cumple, recupera el stake; si falla,
-///         el stake queda bloqueado `lockDays` y luego vuelve a él.
+///         el stake queda bloqueado `lockDays` más allá del fin de la meta y luego vuelve a él.
 /// @dev Propiedades que este contrato garantiza:
 ///      - El stake solo puede salir hacia su creador. No hay función que lo envíe a otro lado.
 ///      - El owner administra atestadores, tope y pausa de creación; nunca toca fondos.
@@ -145,7 +145,8 @@ contract WillFolksEscrow is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     /// @param stake Monto a bloquear. Requiere `approve` previo.
     /// @param startAt Inicio de la meta. Antes de esta fecha el creador puede cancelar.
     /// @param endAt Fin de la meta. El éxito solo puede atestarse desde aquí.
-    /// @param lockDays Días de bloqueo extra si falla.
+    /// @param lockDays Días de bloqueo extra si falla, contados desde `endAt` o desde el
+    ///        veredicto si llega después.
     /// @param kind Tipo de meta.
     /// @param metadataHash Hash de la configuración fuera de la cadena (hora, app, lugar, criterio).
     function createGoal(
@@ -215,7 +216,9 @@ contract WillFolksEscrow is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
             emit GoalResolved(goalId, true, attestor, evidenceHash, 0);
             _payout(goal);
         } else {
-            uint40 unlockAt = uint40(block.timestamp + uint256(goal.lockDays) * 1 days);
+            // El bloqueo cuenta desde el fin de la meta: fallar pronto nunca libera antes que cumplir.
+            uint256 lockFrom = block.timestamp > goal.endAt ? block.timestamp : goal.endAt;
+            uint40 unlockAt = uint40(lockFrom + uint256(goal.lockDays) * 1 days);
             goal.state = GoalState.Failed;
             goal.unlockAt = unlockAt;
             emit GoalResolved(goalId, false, attestor, evidenceHash, unlockAt);

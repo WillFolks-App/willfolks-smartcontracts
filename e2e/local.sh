@@ -150,7 +150,7 @@ expect_eq "$(balance "$USER")" "$FUNDING" "el usuario recuperó su stake"
 expect_eq "$(balance "$RELAYER")" "0" "el relayer que envió la transacción no recibió nada"
 
 # ------------------------------------------------- 2 · meta fallida y bloqueo
-log "2 · Meta fallida: el stake queda bloqueado 2 días y luego vuelve"
+log "2 · Meta fallida: el stake queda bloqueado 2 días tras el fin de la meta y luego vuelve"
 GOAL=$(create_goal "$USER_PK" 0 3600 2)
 warp 600
 UNTIL=$(($(now) + 3600))
@@ -160,7 +160,10 @@ expect_eq "$(state "$GOAL")" "3" "la meta quedó en Failed"
 expect_eq "$(balance "$USER")" "$((FUNDING - STAKE))" "el stake sigue bloqueado"
 expect_revert StillLocked "$ESCROW" "claim(uint256)" "$GOAL" --private-key "$USER_PK"
 
+# Falló a los 10 minutos de una meta de 1 hora: los 2 días cuentan desde el fin de la meta.
 warp $((2 * 86400))
+expect_revert StillLocked "$ESCROW" "claim(uint256)" "$GOAL" --private-key "$USER_PK"
+warp 3000
 send "$ESCROW" "claim(uint256)" "$GOAL" --private-key "$RELAYER_PK"
 expect_eq "$(state "$GOAL")" "4" "la meta quedó en Claimed"
 expect_eq "$(balance "$USER")" "$FUNDING" "el usuario recuperó su stake tras el bloqueo"

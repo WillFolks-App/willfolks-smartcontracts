@@ -34,6 +34,8 @@ contract ContractAttestor is IERC1271 {
     }
 }
 
+/// @dev Las pruebas leen el tiempo con `vm.getBlockTimestamp()`: con `via_ir` el optimizador
+///      trata `block.timestamp` como constante dentro de una función y `vm.warp` lo desmiente.
 contract WillFolksEscrowTest is Test {
     uint128 internal constant MAX_STAKE = 100e6;
     uint40 internal constant GRACE = 7 days;
@@ -85,7 +87,7 @@ contract WillFolksEscrowTest is Test {
     // ------------------------------------------------------------- helpers
 
     function _create(uint128 stake, uint40 startIn, uint40 duration, uint16 lockDays) internal returns (uint256) {
-        uint40 start = uint40(block.timestamp) + startIn;
+        uint40 start = uint40(vm.getBlockTimestamp()) + startIn;
         vm.prank(user);
         return escrow.createGoal(stake, start, start + duration, lockDays, WillFolksEscrow.GoalKind.Alarm, METADATA);
     }
@@ -96,7 +98,7 @@ contract WillFolksEscrowTest is Test {
     }
 
     function _resolve(uint256 goalId, bool success) internal {
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         escrow.resolve(goalId, success, EVIDENCE, validUntil, attestor, _sign(attestorPk, goalId, success, validUntil));
     }
 
@@ -107,7 +109,7 @@ contract WillFolksEscrowTest is Test {
     // ------------------------------------------------------------ creación
 
     function test_Create_LocksStakeAndStoresGoal() public {
-        uint40 start = uint40(block.timestamp) + 1 hours;
+        uint40 start = uint40(vm.getBlockTimestamp()) + 1 hours;
 
         vm.expectEmit(true, true, false, true);
         emit GoalCreated(1, user, WillFolksEscrow.GoalKind.Location, STAKE, start, start + 7 days, 3, METADATA);
@@ -130,7 +132,7 @@ contract WillFolksEscrowTest is Test {
     }
 
     function test_Create_ClampsPastStartToNow() public {
-        uint40 nowTs = uint40(block.timestamp);
+        uint40 nowTs = uint40(vm.getBlockTimestamp());
         vm.prank(user);
         uint256 id =
             escrow.createGoal(STAKE, nowTs - 1 days, nowTs + 1 days, 0, WillFolksEscrow.GoalKind.Alarm, METADATA);
@@ -138,7 +140,7 @@ contract WillFolksEscrowTest is Test {
     }
 
     function test_Create_RevertsOnInvalidInput() public {
-        uint40 nowTs = uint40(block.timestamp);
+        uint40 nowTs = uint40(vm.getBlockTimestamp());
         vm.startPrank(user);
 
         vm.expectRevert(WillFolksEscrow.InvalidStake.selector);
@@ -171,7 +173,7 @@ contract WillFolksEscrowTest is Test {
 
         vm.startPrank(user);
         fee.approve(address(feeEscrow), STAKE);
-        uint40 nowTs = uint40(block.timestamp);
+        uint40 nowTs = uint40(vm.getBlockTimestamp());
         vm.expectRevert(WillFolksEscrow.UnexpectedTransferAmount.selector);
         feeEscrow.createGoal(STAKE, nowTs, nowTs + 1 days, 0, WillFolksEscrow.GoalKind.Alarm, METADATA);
         vm.stopPrank();
@@ -195,7 +197,7 @@ contract WillFolksEscrowTest is Test {
 
     function test_Resolve_SuccessReturnsStake() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
 
         vm.expectEmit(true, true, true, true);
         emit GoalResolved(id, true, attestor, EVIDENCE, 0);
@@ -210,32 +212,33 @@ contract WillFolksEscrowTest is Test {
 
     function test_Resolve_SuccessBeforeEndReverts() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days - 1);
+        vm.warp(vm.getBlockTimestamp() + 7 days - 1);
 
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, id, true, validUntil);
         vm.expectRevert(WillFolksEscrow.TooEarlyForSuccess.selector);
         escrow.resolve(id, true, EVIDENCE, validUntil, attestor, sig);
     }
 
+    /// @dev Falla el día 2 de 7: el bloqueo de 5 días cuenta desde el fin de la meta, no desde el fallo.
     function test_Resolve_FailLocksThenClaimReturnsStake() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 2 days);
-        uint40 failedAt = uint40(block.timestamp);
+        uint40 endAt = uint40(vm.getBlockTimestamp() + 7 days);
+        vm.warp(vm.getBlockTimestamp() + 2 days);
 
         _resolve(id, false);
 
         WillFolksEscrow.Goal memory goal = escrow.getGoal(id);
         assertEq(uint8(goal.state), uint8(WillFolksEscrow.GoalState.Failed));
-        assertEq(goal.unlockAt, failedAt + 5 days);
+        assertEq(goal.unlockAt, endAt + 5 days);
         assertEq(usdc.balanceOf(user), 1_000e6 - STAKE);
         assertEq(escrow.totalLocked(), STAKE);
 
-        vm.warp(failedAt + 5 days - 1);
+        vm.warp(endAt + 5 days - 1);
         vm.expectRevert(WillFolksEscrow.StillLocked.selector);
         escrow.claim(id);
 
-        vm.warp(failedAt + 5 days);
+        vm.warp(endAt + 5 days);
         vm.prank(relayer);
         escrow.claim(id);
 
@@ -248,18 +251,35 @@ contract WillFolksEscrowTest is Test {
         escrow.claim(id);
     }
 
-    function test_Resolve_FailWithoutLockIsClaimableAtOnce() public {
+    /// @dev Fallar pronto nunca libera el stake antes que cumplir: sin bloqueo extra vuelve en `endAt`.
+    function test_Resolve_FailNeverUnlocksBeforeGoalEnd() public {
         uint256 id = _create(STAKE, 0, 7 days, 0);
-        vm.warp(block.timestamp + 1 days);
+        uint256 endAt = escrow.getGoal(id).endAt;
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         _resolve(id, false);
+
+        vm.warp(endAt - 1);
+        vm.expectRevert(WillFolksEscrow.StillLocked.selector);
+        escrow.claim(id);
+
+        vm.warp(endAt);
         escrow.claim(id);
         assertEq(usdc.balanceOf(user), 1_000e6);
+    }
+
+    /// @dev Si el veredicto de fallo llega en el plazo de gracia, el bloqueo cuenta desde el veredicto.
+    function test_Resolve_LateFailLocksFromVerdict() public {
+        uint256 id = _create(STAKE, 0, 7 days, 5);
+        vm.warp(vm.getBlockTimestamp() + 7 days + 3 days);
+        uint40 failedAt = uint40(vm.getBlockTimestamp());
+        _resolve(id, false);
+        assertEq(escrow.getGoal(id).unlockAt, failedAt + 5 days);
     }
 
     function test_Resolve_FailBeforeStartReverts() public {
         uint256 id = _create(STAKE, 1 days, 7 days, 5);
 
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, id, false, validUntil);
         vm.expectRevert(WillFolksEscrow.NotStarted.selector);
         escrow.resolve(id, false, EVIDENCE, validUntil, attestor, sig);
@@ -267,17 +287,17 @@ contract WillFolksEscrowTest is Test {
 
     function test_Resolve_TwiceReverts() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
         _resolve(id, true);
 
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, id, false, validUntil);
         vm.expectRevert(WillFolksEscrow.GoalNotActive.selector);
         escrow.resolve(id, false, EVIDENCE, validUntil, attestor, sig);
     }
 
     function test_Resolve_UnknownGoalReverts() public {
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, 99, true, validUntil);
         vm.expectRevert(WillFolksEscrow.GoalNotActive.selector);
         escrow.resolve(99, true, EVIDENCE, validUntil, attestor, sig);
@@ -291,12 +311,12 @@ contract WillFolksEscrowTest is Test {
         usdc.mint(self, STAKE);
         vm.startPrank(self);
         usdc.approve(address(escrow), STAKE);
-        uint40 nowTs = uint40(block.timestamp);
+        uint40 nowTs = uint40(vm.getBlockTimestamp());
         uint256 id = escrow.createGoal(STAKE, nowTs, nowTs + 1 days, 5, WillFolksEscrow.GoalKind.Alarm, METADATA);
         vm.stopPrank();
 
         vm.warp(nowTs + 1 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(selfPk, id, true, validUntil);
         vm.expectRevert(WillFolksEscrow.AttestorNotAuthorized.selector);
         escrow.resolve(id, true, EVIDENCE, validUntil, self, sig);
@@ -304,9 +324,9 @@ contract WillFolksEscrowTest is Test {
 
     function test_Signature_WrongSignerForAuthorizedAttestorReverts() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
 
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(strangerPk, id, true, validUntil);
         vm.expectRevert(WillFolksEscrow.InvalidSignature.selector);
         escrow.resolve(id, true, EVIDENCE, validUntil, attestor, sig);
@@ -314,8 +334,8 @@ contract WillFolksEscrowTest is Test {
 
     function test_Signature_RevokedAttestorReverts() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, id, true, validUntil);
 
         vm.prank(owner);
@@ -328,8 +348,8 @@ contract WillFolksEscrowTest is Test {
     function test_Signature_CannotBeReusedForAnotherGoalOrVerdict() public {
         uint256 first = _create(STAKE, 0, 7 days, 5);
         uint256 second = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
 
         bytes memory successForFirst = _sign(attestorPk, first, true, validUntil);
         vm.expectRevert(WillFolksEscrow.InvalidSignature.selector);
@@ -348,8 +368,8 @@ contract WillFolksEscrowTest is Test {
 
     function test_Signature_ExpiredReverts() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, id, true, validUntil);
 
         vm.warp(uint256(validUntil) + 1);
@@ -364,14 +384,14 @@ contract WillFolksEscrowTest is Test {
         vm.prank(user);
         usdc.approve(address(other), type(uint256).max);
 
-        uint40 nowTs = uint40(block.timestamp);
+        uint40 nowTs = uint40(vm.getBlockTimestamp());
         uint256 id = _create(STAKE, 0, 7 days, 5);
         vm.prank(user);
         uint256 otherId = other.createGoal(STAKE, nowTs, nowTs + 7 days, 5, WillFolksEscrow.GoalKind.Alarm, METADATA);
         assertEq(id, otherId);
 
         vm.warp(nowTs + 7 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, id, true, validUntil);
         vm.expectRevert(WillFolksEscrow.InvalidSignature.selector);
         other.resolve(otherId, true, EVIDENCE, validUntil, attestor, sig);
@@ -379,8 +399,8 @@ contract WillFolksEscrowTest is Test {
 
     function test_Signature_NotValidOnAnotherChain() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, id, true, validUntil);
 
         vm.chainId(43114);
@@ -418,8 +438,8 @@ contract WillFolksEscrowTest is Test {
         escrow.setAttestor(address(account), true);
 
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
 
         bytes memory bad = _sign(attestorPk, id, true, validUntil);
         vm.expectRevert(WillFolksEscrow.InvalidSignature.selector);
@@ -433,7 +453,7 @@ contract WillFolksEscrowTest is Test {
 
     function test_Reclaim_OnlyAfterGrace() public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        uint256 end = block.timestamp + 7 days;
+        uint256 end = vm.getBlockTimestamp() + 7 days;
 
         vm.warp(end + GRACE);
         vm.expectRevert(WillFolksEscrow.ResolutionWindowOpen.selector);
@@ -444,7 +464,7 @@ contract WillFolksEscrowTest is Test {
         vm.revertToState(snapshot);
 
         vm.warp(end + GRACE + 1);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(attestorPk, id, false, validUntil);
         vm.expectRevert(WillFolksEscrow.ResolutionWindowClosed.selector);
         escrow.resolve(id, false, EVIDENCE, validUntil, attestor, sig);
@@ -473,7 +493,7 @@ contract WillFolksEscrowTest is Test {
         assertEq(escrow.totalLocked(), 0);
 
         uint256 started = _create(STAKE, 1 days, 7 days, 5);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         vm.prank(user);
         vm.expectRevert(WillFolksEscrow.AlreadyStarted.selector);
         escrow.cancel(started);
@@ -503,7 +523,7 @@ contract WillFolksEscrowTest is Test {
         vm.stopPrank();
         assertEq(escrow.maxStake(), 10e6);
 
-        uint40 nowTs = uint40(block.timestamp);
+        uint40 nowTs = uint40(vm.getBlockTimestamp());
         vm.prank(user);
         vm.expectRevert(WillFolksEscrow.StakeAboveCap.selector);
         escrow.createGoal(STAKE, nowTs, nowTs + 1 days, 0, WillFolksEscrow.GoalKind.Alarm, METADATA);
@@ -529,7 +549,7 @@ contract WillFolksEscrowTest is Test {
         vm.prank(owner);
         escrow.pause();
 
-        uint40 nowTs = uint40(block.timestamp);
+        uint40 nowTs = uint40(vm.getBlockTimestamp());
         vm.prank(user);
         vm.expectRevert(Pausable.EnforcedPause.selector);
         escrow.createGoal(STAKE, nowTs, nowTs + 1 days, 0, WillFolksEscrow.GoalKind.Alarm, METADATA);
@@ -537,10 +557,10 @@ contract WillFolksEscrowTest is Test {
         vm.prank(user);
         escrow.cancel(toCancel);
         _resolve(toFail, false);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
         escrow.claim(toFail);
-        vm.warp(block.timestamp + 7 days);
         _resolve(toSucceed, true);
-        vm.warp(block.timestamp + GRACE + 1);
+        vm.warp(vm.getBlockTimestamp() + GRACE + 1);
         escrow.reclaim(toExpire);
 
         assertEq(usdc.balanceOf(user), 1_000e6);
@@ -559,7 +579,7 @@ contract WillFolksEscrowTest is Test {
         uint256 id = _create(stake, 0, duration, lockDays);
         assertEq(usdc.balanceOf(address(escrow)), stake);
 
-        vm.warp(block.timestamp + duration + lateBy);
+        vm.warp(vm.getBlockTimestamp() + duration + lateBy);
         _resolve(id, true);
 
         assertEq(usdc.balanceOf(user), 1_000e6);
@@ -576,16 +596,17 @@ contract WillFolksEscrowTest is Test {
         failAfter = uint40(bound(failAfter, 0, duration + GRACE));
 
         uint256 id = _create(stake, 0, duration, lockDays);
-        vm.warp(block.timestamp + failAfter);
-        uint256 failedAt = block.timestamp;
+        uint256 endAt = vm.getBlockTimestamp() + duration;
+        vm.warp(vm.getBlockTimestamp() + failAfter);
+        uint256 lockFrom = vm.getBlockTimestamp() > endAt ? vm.getBlockTimestamp() : endAt;
         _resolve(id, false);
 
-        vm.warp(failedAt + uint256(lockDays) * 1 days - 1);
+        vm.warp(lockFrom + uint256(lockDays) * 1 days - 1);
         vm.expectRevert(WillFolksEscrow.StillLocked.selector);
         escrow.claim(id);
         assertEq(usdc.balanceOf(user), 1_000e6 - stake);
 
-        vm.warp(failedAt + uint256(lockDays) * 1 days);
+        vm.warp(lockFrom + uint256(lockDays) * 1 days);
         escrow.claim(id);
         assertEq(usdc.balanceOf(user), 1_000e6);
         assertEq(escrow.totalLocked(), 0);
@@ -604,7 +625,7 @@ contract WillFolksEscrowTest is Test {
         vm.prank(owner);
         escrow.setAttestor(attestor, false);
 
-        vm.warp(block.timestamp + startIn + duration + GRACE + waited);
+        vm.warp(vm.getBlockTimestamp() + startIn + duration + GRACE + waited);
         escrow.reclaim(id);
         assertEq(usdc.balanceOf(user), 1_000e6);
         assertEq(usdc.balanceOf(address(escrow)), 0);
@@ -615,8 +636,8 @@ contract WillFolksEscrowTest is Test {
         vm.assume(pk != attestorPk);
 
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         bytes memory sig = _sign(pk, id, success, validUntil);
 
         vm.expectRevert(WillFolksEscrow.InvalidSignature.selector);
@@ -627,8 +648,8 @@ contract WillFolksEscrowTest is Test {
 
     function testFuzz_GarbageSignatureIsRejected(bytes calldata signature) public {
         uint256 id = _create(STAKE, 0, 7 days, 5);
-        vm.warp(block.timestamp + 7 days);
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
 
         vm.expectRevert(WillFolksEscrow.InvalidSignature.selector);
         escrow.resolve(id, true, EVIDENCE, validUntil, attestor, signature);

@@ -11,7 +11,7 @@ el usuario bloquea USDC contra una meta y un atestador autorizado firma el vered
 | Paso | Función | Quién la llama | Efecto |
 | --- | --- | --- | --- |
 | Crear meta | `createGoal` | El usuario | Bloquea el stake en el contrato |
-| Veredicto | `resolve` | Cualquiera, con la firma del atestador | Éxito: el stake vuelve. Fallo: queda bloqueado `lockDays` |
+| Veredicto | `resolve` | Cualquiera, con la firma del atestador | Éxito: el stake vuelve. Fallo: queda bloqueado `lockDays` tras el fin de la meta |
 | Tras el bloqueo | `claim` | Cualquiera | El stake vuelve al creador |
 | Atestador caído | `reclaim` | Cualquiera, pasado el plazo de gracia | El stake vuelve al creador |
 | Arrepentimiento | `cancel` | El creador, antes de `startAt` | El stake vuelve al creador |
@@ -23,6 +23,7 @@ Propiedades que el contrato garantiza y que las pruebas verifican:
 - **Ningún stake queda atrapado.** Si nadie resuelve hasta `endAt + resolutionGrace`, el creador lo recupera.
 - **El owner no toca fondos.** Solo administra atestadores, el tope por meta y la pausa de creación.
 - **La pausa no retiene a nadie.** Detiene metas nuevas; resolver, reclamar y cancelar siguen activos.
+- **Fallar nunca libera antes que cumplir.** El bloqueo cuenta desde `endAt`, o desde el veredicto si llega después.
 
 ### Veredicto firmado (EIP-712)
 
@@ -44,6 +45,8 @@ Resolution(uint256 goalId, bool success, bytes32 evidenceHash, uint40 validUntil
 - La verificación de la meta (alarma, uso de apps, ubicación, evidencia) ocurre fuera de la cadena;
   el contrato solo guarda `metadataHash`.
 - Reglas diarias (check-ins, intentos) las lleva el backend, que firma un único veredicto por meta.
+- Si el emisor del token bloquea la dirección del creador (lista negra de USDC), su stake no puede
+  devolverse: el contrato no tiene, a propósito, otra dirección de salida.
 
 ## Uso
 

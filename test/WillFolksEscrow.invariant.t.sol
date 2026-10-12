@@ -52,7 +52,7 @@ contract EscrowHandler is Test {
         lockDays = uint16(bound(lockDays, 0, 90));
         if (usdc.balanceOf(actor) < stake) return;
 
-        uint40 start = uint40(block.timestamp) + startIn;
+        uint40 start = uint40(vm.getBlockTimestamp()) + startIn;
         vm.prank(actor);
         escrow.createGoal(
             stake, start, start + duration, lockDays, WillFolksEscrow.GoalKind(actorSeed % 4), bytes32(actorSeed)
@@ -64,7 +64,7 @@ contract EscrowHandler is Test {
         uint256 goalId = _pick(goalSeed);
         if (goalId == 0) return;
 
-        uint40 validUntil = uint40(block.timestamp + 1 hours);
+        uint40 validUntil = uint40(vm.getBlockTimestamp() + 1 hours);
         (uint8 v, bytes32 r, bytes32 s) =
             vm.sign(attestorPk, escrow.resolutionDigest(goalId, success, EVIDENCE, validUntil));
         uint256 balanceBefore = usdc.balanceOf(address(escrow));
@@ -93,7 +93,7 @@ contract EscrowHandler is Test {
     }
 
     function warp(uint40 secs) external {
-        vm.warp(block.timestamp + bound(secs, 1, 20 days));
+        vm.warp(vm.getBlockTimestamp() + bound(secs, 1, 20 days));
     }
 
     function callClaim(uint256 goalId) external {
