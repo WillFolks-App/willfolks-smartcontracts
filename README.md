@@ -3,7 +3,7 @@
 Contratos de WillFolks sobre Avalanche. El contrato vigente es **`WillFolksEscrow`** (fase 1):
 el usuario bloquea USDC contra una meta y un atestador autorizado firma el veredicto.
 
-> **Estado:** sin auditar y solo probado en local. No desplegar en mainnet.
+> **Estado:** sin auditar. Desplegado solo en **Monad testnet** y probado en local; no desplegar en mainnet.
 > El repo vive en el servidor git local (`http://localhost:3300/WillFolks-App/willfolks-smartcontracts`).
 
 ## Qué hace `WillFolksEscrow`
@@ -47,6 +47,24 @@ Resolution(uint256 goalId, bool success, bytes32 evidenceHash, uint40 validUntil
 - Reglas diarias (check-ins, intentos) las lleva el backend, que firma un único veredicto por meta.
 - Si el emisor del token bloquea la dirección del creador (lista negra de USDC), su stake no puede
   devolverse: el contrato no tiene, a propósito, otra dirección de salida.
+
+## Despliegue en Monad testnet
+
+| | |
+| --- | --- |
+| Red | Monad testnet, chain id `10143` |
+| `WillFolksEscrow` | `0x3422820Ef9FBC8e0206E4CBcB6369dBd14BE18c4` |
+| USDC | `0x534b2f3A21130d7a60830c2Df862319e593943A3` (6 decimales) |
+| Atestador | `0xD9C8bf78F636515a178c3be045224517d8C028F9` |
+| Owner | `0x0f26475928053737C3CCb143Ef9B28F8eDab04C7` |
+| Tope por meta | 10 USDC · plazo de gracia 1 día |
+| Código fuente | Verificado en Sourcify (`exact_match`) |
+
+- Explorador: https://testnet.monadscan.com/address/0x3422820Ef9FBC8e0206E4CBcB6369dBd14BE18c4
+- Datos legibles por máquina: [`deployments/monad-testnet.json`](deployments/monad-testnet.json).
+- Monad cobra el **límite** de gas y no el gas usado; no fijar límites holgados en las transacciones.
+- El owner es la misma llave que despliega: antes de usar fondos reales debe pasar a un multisig
+  con `transferOwnership` (dos pasos).
 
 ## Uso
 
