@@ -1,0 +1,15 @@
+{
+  "network": "monad-testnet",
+  "chainId": 10143,
+  "rpc": "https://testnet-rpc.monad.xyz",
+  "explorer": "https://testnet.monadscan.com",
+  "usdc": "0x534b2f3A21130d7a60830c2Df862319e593943A3",
+  "escrow": "0x3422820Ef9FBC8e0206E4CBcB6369dBd14BE18c4",
+  "attestor": "0xD9C8bf78F636515a178c3be045224517d8C028F9",
+  "owner": "0x0f26475928053737C3CCb143Ef9B28F8eDab04C7",
+  "maxStake": "10000000",
+  "resolutionGrace": 86400,
+  "deployTx": "0x521eb973b8605a31e4982d4c57ee59c90c95164555ad63bfbaae242a66a4773a",
+  "setAttestorTx": "0x7a79a768b1cbc9a5202895e922c6e40029876af9a6f966ed9cf34e76cd433ee5",
+  "commit": "cdb5a97"
+}
